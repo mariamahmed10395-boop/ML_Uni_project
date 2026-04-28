@@ -5,20 +5,29 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import warnings
 
-# --- Preprocessing Imports ---
+# --- Preprocessing & Modeling Imports ---
 from sklearn.impute import SimpleImputer, KNNImputer
 from sklearn.preprocessing import LabelEncoder, StandardScaler, MinMaxScaler, PowerTransformer
 from sklearn.decomposition import PCA
 from imblearn.over_sampling import SMOTE
 from imblearn.under_sampling import RandomUnderSampler
 from scipy.stats.mstats import winsorize
+from sklearn.model_selection import train_test_split
+
+# Models
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.svm import SVC
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.metrics import accuracy_score, confusion_matrix, classification_report
 
 warnings.filterwarnings('ignore')
 
 # --- 1. Page Configuration ---
 st.set_page_config(page_title="Weather Prediction App", page_icon="🌦️", layout="wide")
 
-# --- 2. Preprocessing Function ---
+# --- 2. Helper Functions ---
 def run_full_preprocessing(df, 
                            impute_method='KNN', 
                            outlier_method='Clipping', 
@@ -57,7 +66,7 @@ def run_full_preprocessing(df,
         if df_work[col].nunique() == 2:
             df_work[col] = le.fit_transform(df_work[col])
     
-    remaining_cats = [c for c in cat_cols if df_work[c].nunique() > 2 and c != 'Date']
+    remaining_cats = [c for c in cat_cols if df_work[c].nunique() > 2 and c not in ['Date', 'RainTomorrow']]
     df_work = pd.get_dummies(df_work, columns=remaining_cats, drop_first=True)
 
     # Split X and y
@@ -66,14 +75,20 @@ def run_full_preprocessing(df,
 
     # Scale Data
     if scaling_method == 'Standard':
-        X_scaled = StandardScaler().fit_transform(X)
+        scaler = StandardScaler()
     elif scaling_method == 'MinMax':
-        X_scaled = MinMaxScaler().fit_transform(X)
+        scaler = MinMaxScaler()
     else:
-        X_scaled = PowerTransformer().fit_transform(X)
+        scaler = PowerTransformer()
+    
+    X_scaled = scaler.fit_transform(X)
 
     # Balance Data and PCA
     if y is not None:
+        # Encode y if it's categorical
+        if y.dtype == 'object':
+            y = le.fit_transform(y)
+
         if sampling_method == 'SMOTE':
             sampler = SMOTE(random_state=42)
         else:
@@ -87,7 +102,6 @@ def run_full_preprocessing(df,
         return X_res, y_res
     
     return X_scaled, None
-
 
 # --- 3. Main Sidebar Navigation ---
 st.sidebar.title("📌 Project Workflow")
@@ -148,7 +162,7 @@ elif page == "2️⃣ Data Visualization":
             st.header("1. Scatter Plot: MinTemp vs MaxTemp")
             fig1, ax1 = plt.subplots(figsize=(10, 6))
             sample_df = df.sample(n=min(5000, len(df)), random_state=42)
-            sns.scatterplot(data=sample_df, x='MinTemp', y='MaxTemp', hue='RainTomorrow', alpha=0.7, ax=ax1)
+            sns.scatterplot(data=sample_df, x='MinTemp', y='MaxTemp', hue='RainTomorrow' if 'RainTomorrow' in df.columns else None, alpha=0.7, ax=ax1)
             st.pyplot(fig1)
 
         elif plot_type == "2. Box Plot":
@@ -157,6 +171,8 @@ elif page == "2️⃣ Data Visualization":
             if 'Humidity3pm' in df.columns and 'RainTomorrow' in df.columns:
                 sns.boxplot(data=df, x='RainTomorrow', y='Humidity3pm', palette='Set2', ax=ax2)
                 st.pyplot(fig2)
+            else:
+                st.error("Required columns for Box Plot are missing.")
 
         elif plot_type == "3. Line Plot":
             st.header("3. Line Plot: Average Max Temp by Month")
@@ -172,12 +188,11 @@ elif page == "2️⃣ Data Visualization":
             if 'RainTomorrow' in df.columns:
                 sns.countplot(data=df, x='RainTomorrow', palette='pastel', ax=ax4)
                 st.pyplot(fig4)
-
     else:
         st.warning("⚠️ Please upload the dataset from the first page first.")
 
 # ==========================================
-# Page 3: Preprocessing (Integrated Logic)
+# Page 3: Preprocessing
 # ==========================================
 elif page == "3️⃣ Preprocessing":
     st.title("🧹 Data Preprocessing Pipeline")
@@ -185,7 +200,6 @@ elif page == "3️⃣ Preprocessing":
     if 'raw_data' in st.session_state:
         df = st.session_state['raw_data'].copy()
         
-        # Sidebar options for preprocessing
         st.sidebar.markdown("---")
         st.sidebar.header("⚙️ Preprocessing Options")
         imp = st.sidebar.radio("1. Imputation Method", ["KNN", "Simple"])
@@ -194,48 +208,106 @@ elif page == "3️⃣ Preprocessing":
         sam = st.sidebar.radio("4. Data Balancing", ["SMOTE", "UnderSampling"])
         pca_on = st.sidebar.checkbox("5. Apply PCA (10 Components)?", value=True)
         
-        st.write("Select your preprocessing techniques from the sidebar and click **Run**.")
-        
         if st.button("Run Full Preprocessing Pipeline", type="primary"):
-            with st.spinner('Applying preprocessing... This might take a moment ⏳'):
+            with st.spinner('Applying preprocessing... ⏳'):
                 X_final, y_final = run_full_preprocessing(df, imp, out, sca, sam, pca_on)
                 
-                # Save processed data for the Model Selection page
-                st.session_state['X_processed'] = X_final
-                st.session_state['y_processed'] = y_final
+                # Split into Train and Test automatically for the user
+                X_train, X_test, y_train, y_test = train_test_split(X_final, y_final, test_size=0.2, random_state=42)
                 
-                st.success("Preprocessing Completed Successfully! 🎉")
+                st.session_state['X_train'] = X_train
+                st.session_state['X_test'] = X_test
+                st.session_state['y_train'] = y_train
+                st.session_state['y_test'] = y_test
                 
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.metric("New Features Shape (X)", f"{X_final.shape[0]} rows, {X_final.shape[1]} cols")
-                with col2:
-                    if y_final is not None:
-                        st.metric("Target Shape (y)", f"{y_final.shape[0]} rows")
-                
-                st.subheader("👀 Preview of Processed Data (First 5 Rows):")
-                st.dataframe(X_final[:5])
-                
+                st.success("Preprocessing & Splitting Completed! 🎉")
+                st.metric("Total Samples after Balancing", len(y_final))
+                st.dataframe(pd.DataFrame(X_train).head())
     else:
-        st.warning("⚠️ Please upload the dataset from the first page first.")
+        st.warning("⚠️ Please upload the dataset first.")
 
 # ==========================================
 # Page 4: Model Selection
 # ==========================================
 elif page == "4️⃣ Model Selection":
-    st.title("🤖 Model Selection")
-    if 'X_processed' in st.session_state:
-        st.write("Processed data is ready! Waiting for ML Model logic...")
-        # TODO: Add model training logic here using st.session_state['X_processed'] and ['y_processed']
+    st.title("🤖 Model Selection & Training")
+    
+    # Try to get data from session state first, then from CSV
+    if 'X_train' in st.session_state:
+        X_train = st.session_state['X_train']
+        y_train = st.session_state['y_train']
+        st.info("Using preprocessed data from Page 3.")
     else:
-        st.warning("⚠️ Please complete the Preprocessing step (Page 3) first.")
+        try:
+            X_train = pd.read_csv('X_train_Nada.csv')
+            y_train = pd.read_csv('y_train_Nada.csv')
+            if isinstance(y_train, pd.DataFrame): y_train = y_train.iloc[:, 0]
+            st.success("Training data loaded from CSV files!")
+        except:
+            st.warning("⚠️ No data found. Please complete Page 3 or provide CSV files.")
+            st.stop()
+
+    st.subheader("Choose your ML Algorithm")
+    algo = st.selectbox("Select Model:", ["Logistic Regression", "Random Forest", "Decision Tree", "SVM", "KNN"])
+
+    if st.button("🚀 Train Model"):
+        models = {
+            "Logistic Regression": LogisticRegression(max_iter=1000),
+            "Random Forest": RandomForestClassifier(random_state=42),
+            "Decision Tree": DecisionTreeClassifier(random_state=42),
+            "SVM": SVC(probability=True),
+            "KNN": KNeighborsClassifier()
+        }
+        
+        model = models[algo]
+        with st.spinner(f"Training {algo}..."):
+            model.fit(X_train, y_train)
+            st.session_state['trained_model'] = model
+            st.session_state['model_name'] = algo
+        st.success(f"✅ {algo} trained successfully! Go to the next page for Evaluation.")
 
 # ==========================================
 # Page 5: Model Evaluation
 # ==========================================
 elif page == "5️⃣ Model Evaluation":
     st.title("📊 Model Evaluation")
-    if 'X_processed' in st.session_state:
-        st.write("Display model accuracy, classification report, confusion matrix, etc.")
+
+    if 'trained_model' not in st.session_state:
+        st.warning("⚠️ Please train a model in Page 4 first!")
+        st.stop()
+
+    # Try to get test data
+    if 'X_test' in st.session_state:
+        X_test = st.session_state['X_test']
+        y_test = st.session_state['y_test']
     else:
-        st.warning("⚠️ Please train a model first.")
+        try:
+            X_test = pd.read_csv('X_test_Nada.csv')
+            y_test = pd.read_csv('y_test_Nada.csv')
+            if isinstance(y_test, pd.DataFrame): y_test = y_test.iloc[:, 0]
+        except:
+            st.error("❌ Test data not found!")
+            st.stop()
+
+    model = st.session_state['trained_model']
+    algo_name = st.session_state['model_name']
+
+    st.subheader(f"Results for: {algo_name}")
+
+    if st.button("📊 Run Evaluation"):
+        y_pred = model.predict(X_test)
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            acc = accuracy_score(y_test, y_pred)
+            st.metric("Test Accuracy", f"{acc*100:.2f}%")
+            st.text("Detailed Report:")
+            st.code(classification_report(y_test, y_pred))
+            
+        with col2:
+            st.write("Confusion Matrix:")
+            fig, ax = plt.subplots()
+            sns.heatmap(confusion_matrix(y_test, y_pred), annot=True, fmt='d', cmap='Blues')
+            ax.set_xlabel('Predicted')
+            ax.set_ylabel('Actual')
+            st.pyplot(fig)
